@@ -9,13 +9,13 @@ dotenv.config();
 // Initialize Gemini SDK lazily, with proper User-Agent header
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY environment variable is not defined!");
+  }
   if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn("GEMINI_API_KEY is not defined in the environment variables!");
-    }
     aiClient = new GoogleGenAI({
-      apiKey: apiKey || "",
+      apiKey: apiKey,
       httpOptions: {
         headers: {
           "User-Agent": "aistudio-build",
@@ -64,11 +64,21 @@ async function generateContentWithRetry(
 
       if (runsOnVercel) {
         // Implement an 8-second timeout on Vercel to prevent hard Gateway Timeout (10s Hobby limit)
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Vercel Timeout Guard: Gemini API call exceeded 8000ms threshold")), 8000)
-        );
-        const response = await Promise.race([apiCall, timeoutPromise]);
-        return response;
+        // Clear timeout upon resolution/rejection to avoid keeping Node event loop busy or unhandled rejection crashes
+        let timerId: NodeJS.Timeout | null = null;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timerId = setTimeout(() => {
+            reject(new Error("Vercel Timeout Guard: Gemini API call exceeded 8000ms threshold"));
+          }, 8000);
+        });
+        try {
+          const response = await Promise.race([apiCall, timeoutPromise]);
+          if (timerId) clearTimeout(timerId);
+          return response;
+        } catch (err) {
+          if (timerId) clearTimeout(timerId);
+          throw err;
+        }
       } else {
         const response = await apiCall;
         return response;
