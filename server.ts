@@ -198,10 +198,102 @@ Instructions:
 const app = express();
 app.use(express.json({ limit: "15mb" }));
 
+// Endpoint to scrape web links provided by users.
+app.post("/api/scrape", async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) {
+      return res.status(400).json({ error: "Missing Target URL to Scrape." });
+    }
+
+    let targetUrl = url.trim();
+    if (!/^https?:\/\//i.test(targetUrl)) {
+      targetUrl = "https://" + targetUrl;
+    }
+
+    console.log(`[Scrape Service] Initializing fetch for: ${targetUrl}`);
+
+    const response = await fetch(targetUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+      },
+      // Keep timeout safe for serverless/coldstart contexts
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server returned HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("html") && !contentType.includes("text") && !contentType.includes("json")) {
+      throw new Error(`Unsupported content format (${contentType}). Only web document types can be scraped.`);
+    }
+
+    const htmlBody = await response.text();
+
+    // Use cheerio to parse structural element tree
+    const cheerio = await import("cheerio");
+    const $ = cheerio.load(htmlBody);
+
+    // Filter noisy layout tags having zero research relevance
+    $("script, style, nav, footer, iframe, noscript, header, svg, symbol, aside, .sidebar, #sidebar, .footer, #footer").remove();
+
+    const pageTitle = $("title").text().trim() || $("h1").first().text().trim() || "Web Resource Content";
+
+    let targetText = "";
+    // Prioritize main text areas
+    const mainArea = $("article, main, #content, .content, .post, .article").first();
+    if (mainArea.length > 0) {
+      targetText = mainArea.text();
+    } else {
+      targetText = $("body").text();
+    }
+
+    let cleanedText = targetText
+      .replace(/\s+/g, " ")
+      .replace(/\n+/g, "\n")
+      .trim();
+
+    // Limit maximum text sample size to protect prompt boundaries
+    if (cleanedText.length > 6000) {
+      cleanedText = cleanedText.substring(0, 6000) + "\n... [Remaining content has been truncated for prompt safety]";
+    }
+
+    if (!cleanedText || cleanedText.length < 50) {
+      // Fallback to broader text extraction
+      cleanedText = $("body").text().replace(/\s+/g, " ").trim();
+      if (cleanedText.length > 6000) {
+        cleanedText = cleanedText.substring(0, 6000) + "\n... [Remaining content has been truncated for prompt safety]";
+      }
+    }
+
+    if (!cleanedText || cleanedText.length < 15) {
+      throw new Error("No readable main text could be extracted from this page. Content might require client-side JS rendering.");
+    }
+
+    console.log(`[Scrape Service] Scraped ${cleanedText.length} characters successfully from: ${pageTitle}`);
+
+    return res.json({
+      title: pageTitle.substring(0, 100),
+      url: targetUrl,
+      content: cleanedText,
+      charCount: cleanedText.length
+    });
+
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    console.error(`[Scrape Service] Error crawling URL:`, error);
+    return res.status(500).json({ error: `Scrape failure: ${errorMsg}` });
+  }
+});
+
 // Stepwise generation runner registered synchronously for perfect serverless Vercel execution
 app.post("/api/generate-step", async (req, res) => {
   try {
-    const { step, prompt, settings, previousOutputs } = req.body;
+    const { step, prompt, settings, previousOutputs, scrapedContext } = req.body;
 
     if (!step || !prompt) {
       return res.status(400).json({ error: "Missing required step or prompt parameters." });
@@ -234,11 +326,24 @@ app.post("/api/generate-step", async (req, res) => {
 
     // Build the sequential prompt payload for the specific agent step
     if (step === "planner") {
-      contents = `Create an exhaustive writing blueprint/outline for this topic prompt:\n"${prompt}"\n\nFormat your plan with clean headings, target goals, and structural sections.`;
+      contents = `Create an exhaustive writing blueprint/outline for this topic prompt:\n"${prompt}"\n\n`;
+      if (scrapedContext) {
+        contents += `Here is rich background information scraped from user-provided research links:\n${scrapedContext}\n\nPlease study these reference materials to formulate your plan, aligning your outline sections with key evidence or themes found inside them.\n\n`;
+      }
+      contents += `Format your plan with clean headings, target goals, and structural sections.`;
     } else if (step === "sources") {
-      contents = `Locate actual, highly relevant peer-reviewed journal articles, scholarly books, doctoral theses, or legal and constitutional authorities for this topic prompt:\n"${prompt}"\n\nBased on this Research Outline Blueprint:\n${previousOutputs?.outline || "Please search suitable headings"}\n\nSearch and structure the findings as a complete Bibliography/Reference List in the requested Citation Style: ${citationStyle}.\n\nFor each citation, include a detailed analytical annotation of 2-3 sentences explaining its unique relevance, critical evidence, and how the subsequent draft writer should integrate it. Provide specific in-text pointer keys (e.g., "[Smith, 2021]" or superscript footnote numbers).`;
+      contents = `Locate actual, highly relevant peer-reviewed journal articles, scholarly books, doctoral theses, or legal and constitutional authorities for this topic prompt:\n"${prompt}"\n\nBased on this Research Outline Blueprint:\n${previousOutputs?.outline || "Please search suitable headings"}\n\n`;
+      if (scrapedContext) {
+        contents += `Here is context scraped from live research links provided by the user:\n${scrapedContext}\n\nReview this content to coordinate real publication sources that correspond or argue against the facts there.\n\n`;
+      }
+      contents += `Search and structure the findings as a complete Bibliography/Reference List in the requested Citation Style: ${citationStyle}.\n\nFor each citation, include a detailed analytical annotation of 2-3 sentences explaining its unique relevance, critical evidence, and how the subsequent draft writer should integrate it. Provide specific in-text pointer keys (e.g., "[Smith, 2021]" or superscript footnote numbers).`;
     } else if (step === "writer") {
-      contents = `Generate the full, detailed first draft based on this topic prompt:\n"${prompt}"\n\nFollowing this Research Outline:\n${previousOutputs?.outline || "Please structure logically"}\n\nCRITICAL - You MUST study and weave in these real peer-reviewed scholar sources, laws, or acts search outputs:\n${previousOutputs?.sources || "N/A"}\n\nIntegrate the citations professionally inside the body text in ${citationStyle} format, and list the bibliography at the very bottom. Write in full depth. Provide continuous prose, not shorthand bullet lists.`;
+      contents = `Generate the full, detailed first draft based on this topic prompt:\n"${prompt}"\n\nFollowing this Research Outline:\n${previousOutputs?.outline || "Please structure logically"}\n\n`;
+      if (scrapedContext) {
+        contents += `--- WEB SOURCES SCRAPED CONTEXT ---\n${scrapedContext}\n---------------------------------\n`;
+        contents += `You MUST weave key details, facts, or concepts from this scraped background context directly into the text. Cite these web resources where relevant using their page titles, authors, or URLs.\n\n`;
+      }
+      contents += `CRITICAL - You MUST study and weave in these real peer-reviewed scholar sources, laws, or acts search outputs:\n${previousOutputs?.sources || "N/A"}\n\nIntegrate the citations professionally inside the body text in ${citationStyle} format, and list the bibliography at the very bottom. Write in full depth. Provide continuous prose, not shorthand bullet lists.`;
     } else if (step === "humanizer") {
       contents = `Perform a comprehensive humanization pass. Ensure deep burstiness (sentence length variation), replace robotic transitions, and insert plausible specific instances into the following draft:\n\n${previousOutputs?.rawDraft || ""}`;
     } else if (step === "reviewer") {

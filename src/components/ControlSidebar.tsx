@@ -1,5 +1,22 @@
-import { useRef, useEffect } from "react";
-import { Layout, Sliders, Activity, RefreshCw, Layers, CheckCircle, Play } from "lucide-react";
+import { useRef, useEffect, useState } from "react";
+import { 
+  Layout, 
+  Sliders, 
+  Activity, 
+  RefreshCw, 
+  Layers, 
+  CheckCircle, 
+  Play, 
+  Link2, 
+  Globe, 
+  Trash2, 
+  AlertCircle, 
+  Check, 
+  FileText, 
+  Plus, 
+  ChevronDown, 
+  ChevronUp 
+} from "lucide-react";
 import { useWriter, PRESET_TOPICS } from "../context/WriterContext";
 
 export default function ControlSidebar() {
@@ -13,8 +30,15 @@ export default function ControlSidebar() {
     steps,
     executePipeline,
     executeSingleStep,
-    showToast
+    showToast,
+    scrapedLinks,
+    scrapeLink,
+    deleteScrapedLink
   } = useWriter();
+
+  const [linkInput, setLinkInput] = useState("");
+  const [viewingLinkId, setViewingLinkId] = useState<string | null>(null);
+  const [scrapingInProgress, setScrapingInProgress] = useState(false);
 
   const endOfProgressRef = useRef<HTMLDivElement>(null);
 
@@ -62,6 +86,140 @@ export default function ControlSidebar() {
           placeholder="Or write custom instructions here... Be as specific or conceptual as you'd like."
           className="w-full h-32 p-3 text-slate-700 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 text-xs transition placeholder:text-slate-400 font-sans leading-relaxed"
         />
+
+        {/* Web Link Scraper Integration */}
+        <div className="space-y-3 pt-3.5 border-t border-slate-100">
+          <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+            <Link2 className="h-3.5 w-3.5 text-slate-400" />
+            Attach Reference Links (Scrape Context)
+          </label>
+
+          <div className="flex gap-2">
+            <input
+              type="url"
+              id="link-scraper-input"
+              value={linkInput}
+              onChange={(e) => setLinkInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (linkInput.trim()) {
+                    scrapeLink(linkInput.trim());
+                    setLinkInput("");
+                  }
+                }
+              }}
+              placeholder="Paste any article, doc, or Wikipedia URL..."
+              className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 transition font-sans placeholder:text-slate-400"
+            />
+            <button
+              type="button"
+              id="btn-add-scrape"
+              onClick={() => {
+                if (linkInput.trim()) {
+                  scrapeLink(linkInput.trim());
+                  setLinkInput("");
+                } else {
+                  showToast("Please enter a valid URL link.", "info");
+                }
+              }}
+              className="px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold cursor-pointer transition flex items-center justify-center shrink-0 shadow-sm"
+              title="Add link and trigger server-side scraper"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
+
+          {/* List of scraped link reference documents */}
+          {scrapedLinks.length > 0 && (
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              {scrapedLinks.map((link) => {
+                const isScraping = link.status === "scraping";
+                const isSuccess = link.status === "success";
+                const isError = link.status === "error";
+
+                return (
+                  <div key={link.id} className="bg-slate-50/50 rounded-xl p-2.5 border border-slate-200/55 transition flex flex-col gap-1.5 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="shrink-0">
+                          {isScraping && <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-500" />}
+                          {isSuccess && <Check className="h-3.5 w-3.5 text-emerald-600 font-bold" />}
+                          {isError && <AlertCircle className="h-3.5 w-3.5 text-rose-500" />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-semibold text-slate-850 truncate leading-snug" title={link.title}>
+                            {link.title}
+                          </p>
+                          <span className="text-[9px] text-slate-400 font-mono block truncate" title={link.url}>
+                            {link.url}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {isSuccess && (
+                          <button
+                            type="button"
+                            id={`btn-view-${link.id}`}
+                            onClick={() => setViewingLinkId(viewingLinkId === link.id ? null : link.id)}
+                            className="p-1 hover:bg-slate-200 rounded text-slate-500 hover:text-slate-700 transition cursor-pointer"
+                            title="Toggle scraped text snapshot"
+                          >
+                            {viewingLinkId === link.id ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          id={`btn-delete-${link.id}`}
+                          onClick={() => deleteScrapedLink(link.id)}
+                          className="p-1 hover:bg-rose-50 hover:text-rose-600 rounded text-slate-400 transition cursor-pointer"
+                          title="Remove attached link"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Expandable Scraped text preview block */}
+                    {isSuccess && viewingLinkId === link.id && (
+                      <div className="mt-1 pb-1 pt-1.5 border-t border-slate-100 text-[10px] text-slate-600 max-h-36 overflow-y-auto leading-relaxed">
+                        <div className="flex justify-between items-center bg-slate-100 px-2 py-0.5 rounded text-[9px] text-slate-500 font-medium mb-1.5">
+                          <span>Scraped Payload ({link.charCount} chars)</span>
+                          <span className="font-mono text-emerald-700 font-semibold bg-emerald-50 px-1 rounded">Extracted Text</span>
+                        </div>
+                        <p className="whitespace-pre-line font-mono bg-white p-2 rounded border border-slate-100 text-[9px] text-slate-500">
+                          {link.content}
+                        </p>
+                      </div>
+                    )}
+
+                    {isError && (
+                      <p className="text-[10px] text-rose-600 bg-rose-50/70 p-2 rounded border border-rose-100 font-medium leading-relaxed">
+                        {link.error || "Web crawler failed to read. Link may block automated requests."}
+                      </p>
+                    )}
+
+                    {isScraping && (
+                      <div className="flex items-center gap-2 text-[10px] text-slate-500 animate-pulse bg-slate-100 p-2 rounded border border-slate-200/50">
+                        <Globe className="h-3.5 w-3.5 animate-bounce shrink-0 text-slate-400" />
+                        <span>Connecting to host, cleaning HTML layout tree & isolating text nodes...</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Dynamic contextual notice */}
+          {scrapedLinks.some(l => l.status === "success") && (
+            <div className="text-[10px] bg-emerald-500/5 text-emerald-800 border border-emerald-500/15 rounded-lg p-2.5 flex items-center gap-1.5 font-medium leading-normal animate-fade-in">
+              <CheckCircle className="h-3.5 w-3.5 text-emerald-600 shrink-0 fill-emerald-100" />
+              <span>Links attached. Sequential cascades will prioritize and site this scraped context.</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Basic Style Quick Dials */}

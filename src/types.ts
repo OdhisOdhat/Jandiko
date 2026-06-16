@@ -71,3 +71,14 @@ export interface DocumentVersion {
     final: WritingMetrics;
   };
 }
+
+export interface ScrapedLink {
+  id: string;
+  url: string;
+  title: string;
+  content: string;
+  charCount: number;
+  status: "idle" | "scraping" | "success" | "error";
+  error?: string;
+}
+

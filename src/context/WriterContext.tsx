@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from "react";
-import { WritingMetrics, WritingSettings, AgentStepResult, DocumentVersion, FlaggedItem } from "../types";
+import { WritingMetrics, WritingSettings, AgentStepResult, DocumentVersion, FlaggedItem, ScrapedLink } from "../types";
 import { analyzeText } from "../lib/metrics";
 
 export const PRESET_TOPICS = [
@@ -66,6 +66,10 @@ interface WriterContextType {
   handleSourceChange: (src: "final" | "humanized" | "raw" | "sources" | "outline") => void;
   handleApplyRepair: (item: FlaggedItem) => void;
   resetWorkspace: () => void;
+  scrapedLinks: ScrapedLink[];
+  scrapeLink: (url: string) => Promise<void>;
+  deleteScrapedLink: (id: string) => void;
+  clearScrapedLinks: () => void;
 }
 
 const WriterContext = createContext<WriterContextType | undefined>(undefined);
@@ -101,6 +105,85 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
   const [newProfileName, setNewProfileName] = useState("");
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [rawDraftBaseline, setRawDraftBaseline] = useState<WritingMetrics | null>(null);
+
+  const [scrapedLinks, setScrapedLinks] = useState<ScrapedLink[]>([]);
+
+  const scrapeLink = async (url: string) => {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) return;
+
+    if (scrapedLinks.some(link => link.url.toLowerCase() === trimmedUrl.toLowerCase())) {
+      showToast("This link is already in your reference list.", "info");
+      return;
+    }
+
+    const tempId = "scraping_" + Date.now();
+    const newLink: ScrapedLink = {
+      id: tempId,
+      url: trimmedUrl,
+      title: "Reading webpage content...",
+      content: "",
+      charCount: 0,
+      status: "scraping"
+    };
+
+    setScrapedLinks(prev => [...prev, newLink]);
+    showToast("Connecting and harvesting website contents...", "info");
+
+    try {
+      const response = await fetch("/api/scrape", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: trimmedUrl })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Could not retrieve web body.");
+      }
+
+      const result = await response.json();
+      setScrapedLinks(prev =>
+        prev.map(item =>
+          item.id === tempId
+            ? {
+                ...item,
+                id: "scraped_" + Date.now(),
+                title: result.title,
+                content: result.content,
+                charCount: result.charCount,
+                status: "success"
+              }
+            : item
+        )
+      );
+      showToast("Web source has been successfully attached to references!", "success");
+    } catch (err: any) {
+      console.error(err);
+      setScrapedLinks(prev =>
+        prev.map(item =>
+          item.id === tempId
+            ? {
+                ...item,
+                title: "Failed to scrape content",
+                status: "error",
+                error: err?.message || "URL may block automatic crawlers."
+              }
+            : item
+        )
+      );
+      showToast(`Scrape failure: ${err.message || "Invalid URL format"}`, "error");
+    }
+  };
+
+  const deleteScrapedLink = (id: string) => {
+    setScrapedLinks(prev => prev.filter(item => item.id !== id));
+    showToast("Attached context link removed.", "info");
+  };
+
+  const clearScrapedLinks = () => {
+    setScrapedLinks([]);
+  };
 
   const liveMetrics = useMemo<WritingMetrics>(() => {
     return analyzeText(editedText);
@@ -187,6 +270,11 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
 
     const runTimestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+    const scrapedContextStr = scrapedLinks
+      .filter(l => l.status === "success")
+      .map(l => `Source Link URL: ${l.url}\nScraped Page Title: ${l.title}\nScraped Content:\n${l.content}`)
+      .join("\n\n============\n\n");
+
     for (let i = 0; i < steps.length; i++) {
       const activeStep = steps[i].step;
       setCurrentStepIndex(i);
@@ -206,7 +294,8 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
             step: activeStep,
             prompt,
             settings,
-            previousOutputs: currentOutputs
+            previousOutputs: currentOutputs,
+            scrapedContext: scrapedContextStr || undefined
           })
         });
 
@@ -322,6 +411,11 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
     setSteps(prev => prev.map((s, idx) => idx === stepIndex ? { ...s, status: "running" as const } : s));
     const runTimestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+    const scrapedContextStr = scrapedLinks
+      .filter(l => l.status === "success")
+      .map(l => `Source Link URL: ${l.url}\nScraped Page Title: ${l.title}\nScraped Content:\n${l.content}`)
+      .join("\n\n============\n\n");
+
     try {
       const response = await fetch("/api/generate-step", {
         method: "POST",
@@ -330,7 +424,8 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
           step: activeStep,
           prompt,
           settings,
-          previousOutputs: currentOutputs
+          previousOutputs: currentOutputs,
+          scrapedContext: scrapedContextStr || undefined
         })
       });
 
@@ -530,7 +625,11 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
         handleSourceChange,
         handleApplyRepair,
         executeSingleStep,
-        resetWorkspace
+        resetWorkspace,
+        scrapedLinks,
+        scrapeLink,
+        deleteScrapedLink,
+        clearScrapedLinks
       }}
     >
       {children}
