@@ -1,0 +1,6 @@
+{
+  "name": "Human-Like AI Writer",
+  "description": "An advanced multi-agent writing workspace that plans, drafts, humanizes, critiques, and refines written content to match natural human writing styles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
