@@ -211,8 +211,26 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error || `HTTP error! Status: ${response.status}`);
+          let errMsg = `HTTP error! Status: ${response.status}`;
+          try {
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.includes("application/json")) {
+              const errData = await response.json();
+              errMsg = errData.error || errMsg;
+            } else {
+              const textSnip = await response.text();
+              errMsg = textSnip.substring(0, 150).trim() || errMsg;
+            }
+          } catch (e) {
+            // ignore fallback error
+          }
+          throw new Error(errMsg);
+        }
+
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          const textSnip = await response.text();
+          throw new Error(`Server returned non-JSON response (${response.status}). Snippet: "${textSnip.substring(0, 150).trim()}"`);
         }
 
         const data = await response.json();
@@ -315,8 +333,26 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || `HTTP error! Status: ${response.status}`);
+        let errMsg = `HTTP error! Status: ${response.status}`;
+        try {
+          const contentType = response.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const errData = await response.json();
+            errMsg = errData.error || errMsg;
+          } else {
+            const textSnip = await response.text();
+            errMsg = textSnip.substring(0, 150).trim() || errMsg;
+          }
+        } catch (e) {
+          // ignore fallback error
+        }
+        throw new Error(errMsg);
+      }
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const textSnip = await response.text();
+        throw new Error(`Server returned non-JSON response (${response.status}). Snippet: "${textSnip.substring(0, 150).trim()}"`);
       }
 
       const data = await response.json();
