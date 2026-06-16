@@ -241,7 +241,13 @@ export default function ControlSidebar() {
                       "text-slate-500"
                     }`}>{step.title}</p>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      {isCompleted && (
+                      {isCompleted && step.isOfflineFallback && (
+                        <span className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded font-semibold flex items-center gap-1" title="Running in Quota-Resilient Offline Mode to bypass API limits.">
+                          <span className="h-1 w-1 bg-amber-500 rounded-full animate-ping shrink-0" />
+                          Offline
+                        </span>
+                      )}
+                      {isCompleted && !step.isOfflineFallback && (
                         <span className="text-[9px] text-slate-500 bg-slate-50 border border-slate-100 px-1 py-0.5 rounded font-medium">Done</span>
                       )}
                       {!pipelineRunning && (

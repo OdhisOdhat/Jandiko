@@ -235,6 +235,7 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
 
         const data = await response.json();
         const output = data.output;
+        const isOfflineFallback = !!data.isOfflineFallback;
 
         if (activeStep === "planner") currentOutputs.outline = output;
         else if (activeStep === "sources") currentOutputs.sources = output;
@@ -247,7 +248,8 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
           ...s,
           status: "completed" as const,
           output,
-          timestamp: runTimestamp
+          timestamp: runTimestamp,
+          isOfflineFallback
         } : s));
 
         if (activeStep === "writer") {
@@ -357,6 +359,7 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
 
       const data = await response.json();
       const output = data.output;
+      const isOfflineFallback = !!data.isOfflineFallback;
 
       if (activeStep === "planner") currentOutputs.outline = output;
       else if (activeStep === "sources") currentOutputs.sources = output;
@@ -373,7 +376,8 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
         ...s,
         status: "completed" as const,
         output,
-        timestamp: runTimestamp
+        timestamp: runTimestamp,
+        isOfflineFallback
       } : s));
 
       if (activeStep === "writer") {

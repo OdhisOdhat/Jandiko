@@ -17,6 +17,7 @@ export interface AgentStepResult {
   status: "idle" | "running" | "completed" | "failed";
   output: string;
   timestamp: string;
+  isOfflineFallback?: boolean;
 }
 
 export interface FlaggedItem {

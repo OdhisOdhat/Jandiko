@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { handleOfflineGeneration } from "./src/utils/offlineGenerator";
 
 dotenv.config();
 
@@ -28,8 +29,8 @@ function getGeminiClient(): GoogleGenAI {
 
 // Fallback chain for text generation models to ensure maximum availability during high demand spikes
 const MODEL_FALLBACK_CHAIN: { [key: string]: string[] } = {
-  "gemini-3.5-flash": ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"],
-  "gemini-3.1-flash-lite": ["gemini-3.1-flash-lite", "gemini-flash-latest"]
+  "gemini-3.5-flash": ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+  "gemini-3.1-flash-lite": ["gemini-3.1-flash-lite"]
 };
 
 // Custom wrapper to perform Content Generation with exponential retry mechanism & model fallback chain
@@ -185,125 +186,110 @@ Instructions:
 const app = express();
 app.use(express.json({ limit: "15mb" }));
 
-async function startServer() {
+// Stepwise generation runner registered synchronously for perfect serverless Vercel execution
+app.post("/api/generate-step", async (req, res) => {
+  try {
+    const { step, prompt, settings, previousOutputs } = req.body;
 
-  // Stepwise generation runner
-  app.post("/api/generate-step", async (req, res) => {
+    if (!step || !prompt) {
+      return res.status(400).json({ error: "Missing required step or prompt parameters." });
+    }
+
+    const ai = getGeminiClient();
+
+    // Determine config parameters based on settings
+    const category = settings?.category || "academic";
+    const formality = settings?.formality || "professional";
+    const humanizationLevel = settings?.humanizationLevel ?? 75;
+    const criticalThinkingLevel = settings?.criticalThinkingLevel ?? 75;
+    const hedgingStyle = settings?.hedgingStyle || "balanced";
+    const examplesWeight = settings?.examplesWeight || "balanced";
+    const citationStyle = settings?.citationStyle || "none";
+
+    let sysInstruction = SYSTEM_PROMPTS[step as keyof typeof SYSTEM_PROMPTS];
+    if (!sysInstruction) {
+      return res.status(400).json({ error: "Invalid agent step specified." });
+    }
+
+    // Dynamic enhancements to the instructions based on settings
+    sysInstruction += `\n\nWriting Mode Profile:\n- Category: ${category}\n- Formality level: ${formality}\n- Citation Style target: ${citationStyle !== "none" ? citationStyle : "No explicit citations, use natural references if needed"}`;
+    sysInstruction += `\n- Humanization Intensity Slider: ${humanizationLevel}/100. (Adhere strictly to human-like cadence variation, avoiding robotic structures where 100/100 is highly bursty and conversational, and 0/100 is more standardized)`;
+    sysInstruction += `\n- Critical Thinking Level: ${criticalThinkingLevel}/100. (Control the depth of logical critique and analytical synthesis)`;
+    sysInstruction += `\n- Hedging Style: ${hedgingStyle}. (Influence the level of academic doubt and reasonable qualification)`;
+    sysInstruction += `\n- Concrete Examples Style: ${examplesWeight}. (Influence the density of anecdotal, factual, or empirical details versus theoretical generalities)`;
+
+    let contents = "";
+
+    // Build the sequential prompt payload for the specific agent step
+    if (step === "planner") {
+      contents = `Create an exhaustive writing blueprint/outline for this topic prompt:\n"${prompt}"\n\nFormat your plan with clean headings, target goals, and structural sections.`;
+    } else if (step === "sources") {
+      contents = `Locate actual, highly relevant peer-reviewed journal articles, scholarly books, doctoral theses, or legal and constitutional authorities for this topic prompt:\n"${prompt}"\n\nBased on this Research Outline Blueprint:\n${previousOutputs?.outline || "Please search suitable headings"}\n\nSearch and structure the findings as a complete Bibliography/Reference List in the requested Citation Style: ${citationStyle}.\n\nFor each citation, include a detailed analytical annotation of 2-3 sentences explaining its unique relevance, critical evidence, and how the subsequent draft writer should integrate it. Provide specific in-text pointer keys (e.g., "[Smith, 2021]" or superscript footnote numbers).`;
+    } else if (step === "writer") {
+      contents = `Generate the full, detailed first draft based on this topic prompt:\n"${prompt}"\n\nFollowing this Research Outline:\n${previousOutputs?.outline || "Please structure logically"}\n\nCRITICAL - You MUST study and weave in these real peer-reviewed scholar sources, laws, or acts search outputs:\n${previousOutputs?.sources || "N/A"}\n\nIntegrate the citations professionally inside the body text in ${citationStyle} format, and list the bibliography at the very bottom. Write in full depth. Provide continuous prose, not shorthand bullet lists.`;
+    } else if (step === "humanizer") {
+      contents = `Perform a comprehensive humanization pass. Ensure deep burstiness (sentence length variation), replace robotic transitions, and insert plausible specific instances into the following draft:\n\n${previousOutputs?.rawDraft || ""}`;
+    } else if (step === "reviewer") {
+      contents = `Rigorously critique this Humanized writing product:\n\n${previousOutputs?.humanizedDraft || ""}\n\nEvaluate its arguments, sentence pacing, validity of examples, logic, and reference/citation integrity. Deliver a detailed critique report with actionable improvements.`;
+    } else if (step === "editor") {
+      contents = `Revise the original humanized draft to incorporate the Critique feedback perfectly, resulting in the final master draft.\n\nOriginal Humanized Draft:\n${previousOutputs?.humanizedDraft || ""}\n\nCritical Review Feedback:\n${previousOutputs?.critique || ""}\n\nCombine this seamlessly. Deliver the final continuous polished text with natural, organic cadence, keeping the citations and style fully intact and correct.`;
+    }
+
+    const targetModel = settings?.modelName || "gemini-3.5-flash";
+    console.log(`[Agent ${step}] Starting call with Gemini (Requested model: ${targetModel})...`);
+    
+    // Configure search tool for sources agent to retrieve real academic sources from the web
+    const tools = [];
+    if (step === "sources") {
+      tools.push({ googleSearch: {} });
+    }
+
+    // Call Gemini API with robust automated model retry and self-healing fallback mechanism
+    const response = await generateContentWithRetry({
+      model: targetModel,
+      contents,
+      config: {
+        systemInstruction: sysInstruction,
+        temperature: step === "humanizer" ? 0.9 : 0.7,
+        ...(tools.length > 0 ? { tools } : {})
+      }
+    });
+
+    const outputText = response.text || "";
+    console.log(`[Agent ${step}] Generation successful. Output length: ${outputText.length} characters.`);
+    
+    return res.json({ output: outputText });
+
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    console.warn(`[Resiliency Engine] Gemini API call failed for Agent "${req.body.step}". Launching dynamic Offline Content Synthesis Engine. Error detail:`, errorMsg);
+    
     try {
-      const { step, prompt, settings, previousOutputs } = req.body;
-
-      if (!step || !prompt) {
-        return res.status(400).json({ error: "Missing required step or prompt parameters." });
-      }
-
-      const ai = getGeminiClient();
-
-      // Determine config parameters based on settings
-      const category = settings?.category || "academic";
-      const formality = settings?.formality || "professional";
-      const humanizationLevel = settings?.humanizationLevel ?? 75;
-      const criticalThinkingLevel = settings?.criticalThinkingLevel ?? 75;
-      const hedgingStyle = settings?.hedgingStyle || "balanced";
-      const examplesWeight = settings?.examplesWeight || "balanced";
-      const citationStyle = settings?.citationStyle || "none";
-
-      let sysInstruction = SYSTEM_PROMPTS[step as keyof typeof SYSTEM_PROMPTS];
-      if (!sysInstruction) {
-        return res.status(400).json({ error: "Invalid agent step specified." });
-      }
-
-      // Dynamic enhancements to the instructions based on settings
-      sysInstruction += `\n\nWriting Mode Profile:\n- Category: ${category}\n- Formality level: ${formality}\n- Citation Style target: ${citationStyle !== "none" ? citationStyle : "No explicit citations, use natural references if needed"}`;
-      sysInstruction += `\n- Humanization Intensity Slider: ${humanizationLevel}/100. (Adhere strictly to human-like cadence variation, avoiding robotic structures where 100/100 is highly bursty and conversational, and 0/100 is more standardized)`;
-      sysInstruction += `\n- Critical Thinking Level: ${criticalThinkingLevel}/100. (Control the depth of logical critique and analytical synthesis)`;
-      sysInstruction += `\n- Hedging Style: ${hedgingStyle}. (Influence the level of academic doubt and reasonable qualification)`;
-      sysInstruction += `\n- Concrete Examples Style: ${examplesWeight}. (Influence the density of anecdotal, factual, or empirical details versus theoretical generalities)`;
-
-      let contents = "";
-
-      // Build the sequential prompt payload for the specific agent step
-      if (step === "planner") {
-        contents = `Create an exhaustive writing blueprint/outline for this topic prompt:\n"${prompt}"\n\nFormat your plan with clean headings, target goals, and structural sections.`;
-      } else if (step === "sources") {
-        contents = `Locate actual, highly relevant peer-reviewed journal articles, scholarly books, doctoral theses, or legal and constitutional authorities for this topic prompt:\n"${prompt}"\n\nBased on this Research Outline Blueprint:\n${previousOutputs?.outline || "Please search suitable headings"}\n\nSearch and structure the findings as a complete Bibliography/Reference List in the requested Citation Style: ${citationStyle}.\n\nFor each citation, include a detailed analytical annotation of 2-3 sentences explaining its unique relevance, critical evidence, and how the subsequent draft writer should integrate it. Provide specific in-text pointer keys (e.g., "[Smith, 2021]" or superscript footnote numbers).`;
-      } else if (step === "writer") {
-        contents = `Generate the full, detailed first draft based on this topic prompt:\n"${prompt}"\n\nFollowing this Research Outline:\n${previousOutputs?.outline || "Please structure logically"}\n\nCRITICAL - You MUST study and weave in these real peer-reviewed scholar sources, laws, or acts search outputs:\n${previousOutputs?.sources || "N/A"}\n\nIntegrate the citations professionally inside the body text in ${citationStyle} format, and list the bibliography at the very bottom. Write in full depth. Provide continuous prose, not shorthand bullet lists.`;
-      } else if (step === "humanizer") {
-        contents = `Perform a comprehensive humanization pass. Ensure deep burstiness (sentence length variation), replace robotic transitions, and insert plausible specific instances into the following draft:\n\n${previousOutputs?.rawDraft || ""}`;
-      } else if (step === "reviewer") {
-        contents = `Rigorously critique this Humanized writing product:\n\n${previousOutputs?.humanizedDraft || ""}\n\nEvaluate its arguments, sentence pacing, validity of examples, logic, and reference/citation integrity. Deliver a detailed critique report with actionable improvements.`;
-      } else if (step === "editor") {
-        contents = `Revise the original humanized draft to incorporate the Critique feedback perfectly, resulting in the final master draft.\n\nOriginal Humanized Draft:\n${previousOutputs?.humanizedDraft || ""}\n\nCritical Review Feedback:\n${previousOutputs?.critique || ""}\n\nCombine this seamlessly. Deliver the final continuous polished text with natural, organic cadence, keeping the citations and style fully intact and correct.`;
-      }
-
-      const targetModel = settings?.modelName || "gemini-3.5-flash";
-      console.log(`[Agent ${step}] Starting call with Gemini (Requested model: ${targetModel})...`);
-      
-      // Configure search tool for sources agent to retrieve real academic sources from the web
-      const tools = [];
-      if (step === "sources") {
-        tools.push({ googleSearch: {} });
-      }
-
-      // Call Gemini API with robust automated model retry and self-healing fallback mechanism
-      const response = await generateContentWithRetry({
-        model: targetModel,
-        contents,
-        config: {
-          systemInstruction: sysInstruction,
-          temperature: step === "humanizer" ? 0.9 : 0.7,
-          ...(tools.length > 0 ? { tools } : {})
-        }
+      // Direct, safe fallback to our smart local academic content-creation templates
+      const fallbackText = handleOfflineGeneration(req.body.step, req.body.prompt, req.body.settings, req.body.previousOutputs);
+      return res.json({ 
+        output: fallbackText, 
+        isOfflineFallback: true,
+        fallbackReason: errorMsg || "Upstream rate limit / quota exceeded"
       });
-
-      const outputText = response.text || "";
-      console.log(`[Agent ${step}] Generation successful. Output length: ${outputText.length} characters.`);
-      
-      return res.json({ output: outputText });
-
-    } catch (error: any) {
-      console.error("Gemini API Error in /api/generate-step:", error);
-      
-      const errorMsg = error?.message || String(error);
-      const isQuota = 
-        error?.status === "RESOURCE_EXHAUSTED" || 
-        error?.code === 429 || 
-        error?.status === 429 ||
-        errorMsg.includes("429") ||
-        errorMsg.toLowerCase().includes("quota") ||
-        errorMsg.toLowerCase().includes("rate limit") ||
-        errorMsg.toLowerCase().includes("resource_exhausted");
-
-      const isUnavailable = 
-        error?.status === 503 || 
-        error?.code === 503 ||
-        errorMsg.includes("503") ||
-        errorMsg.includes("UNAVAILABLE") ||
-        errorMsg.includes("high demand") ||
-        errorMsg.includes("Overloaded") ||
-        errorMsg.includes("overloaded");
-
-      let friendlyError = "An internal error occurred during multi-agent generation.";
-      if (isQuota) {
-        friendlyError = "Gemini API Quota Exceeded (Rate Limit 429). The free-tier quota for this model was reached. Wait 60 seconds and run individual steps, or switch to 'Gemini Flash Lite' inside settings.";
-      } else if (isUnavailable) {
-        friendlyError = "Upstream model temporarily unavailable (503) due to high demand. Please try again in 5-10 seconds, or switch AI models in settings.";
-      }
-
+    } catch (fallbackError: any) {
+      console.error("[Resiliency Failure] Local offline text synthesis also failed:", fallbackError);
       return res.status(500).json({ 
-        error: friendlyError, 
-        details: errorMsg
+        error: "Upstream generation failed and local synthesis fallback encountered an unexpected runtime issue.", 
+        details: fallbackError?.message || String(fallbackError) 
       });
     }
-  });
+  }
+});
 
-  // Health check endpoint
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "healthy", keyAvailable: !!process.env.GEMINI_API_KEY });
-  });
+// Health check endpoint registered synchronously
+app.get("/api/health", (req, res) => {
+  res.json({ status: "healthy", keyAvailable: !!process.env.GEMINI_API_KEY });
+});
 
-  // Serve frontend assets
-  if (process.env.NODE_ENV !== "production") {
+// Serve frontend assets
+async function setupViteOrStatic() {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -316,15 +302,18 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+}
 
+// Start dev or production listener if not serverless (e.g. not on Vercel)
+setupViteOrStatic().then(() => {
   if (!process.env.VERCEL) {
     const PORT = 3000;
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server fully operational on http://localhost:${PORT} in ${process.env.NODE_ENV || "development"} mode.`);
     });
   }
-}
-
-startServer();
+}).catch((err) => {
+  console.error("Failed to initialize static / Vite configuration:", err);
+});
 
 export default app;
