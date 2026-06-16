@@ -1,19 +1,19 @@
 import express from "express";
 import path from "path";
-import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { handleOfflineGeneration } from "./src/utils/offlineGenerator";
 
 dotenv.config();
 
 // Initialize Gemini SDK lazily, with proper User-Agent header
-let aiClient: GoogleGenAI | null = null;
-function getGeminiClient(): GoogleGenAI {
+let aiClient: any = null;
+async function getGeminiClient(): Promise<any> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY environment variable is not defined!");
   }
   if (!aiClient) {
+    const { GoogleGenAI } = await import("@google/genai");
     aiClient = new GoogleGenAI({
       apiKey: apiKey,
       httpOptions: {
@@ -54,7 +54,7 @@ async function generateContentWithRetry(
     const currentModel = fallbacks[modelIndex];
     
     try {
-      const ai = getGeminiClient();
+      const ai = await getGeminiClient();
       console.log(`[Gemini Request] Attempt ${attempt + 1} utilizing model: ${currentModel} (target requested: ${requestedModel})...`);
       
       const apiCall = ai.models.generateContent({
@@ -309,7 +309,7 @@ app.post("/api/generate-step", async (req, res) => {
       return res.status(400).json({ error: "Missing required step or prompt parameters." });
     }
 
-    const ai = getGeminiClient();
+    const ai = await getGeminiClient();
 
     // Determine config parameters based on settings
     const category = settings?.category || "academic";
