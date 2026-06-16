@@ -42,6 +42,8 @@ async function generateContentWithRetry(
   maxRetries = 4,
   initialDelayMs = 1500
 ): Promise<any> {
+  const runsOnVercel = !!process.env.VERCEL;
+  const actualMaxRetries = runsOnVercel ? 0 : maxRetries;
   let attempt = 0;
   const requestedModel = params.model;
   const fallbacks = MODEL_FALLBACK_CHAIN[requestedModel] || [requestedModel];
@@ -55,11 +57,22 @@ async function generateContentWithRetry(
       const ai = getGeminiClient();
       console.log(`[Gemini Request] Attempt ${attempt + 1} utilizing model: ${currentModel} (target requested: ${requestedModel})...`);
       
-      const response = await ai.models.generateContent({
+      const apiCall = ai.models.generateContent({
         ...params,
         model: currentModel
       });
-      return response;
+
+      if (runsOnVercel) {
+        // Implement an 8-second timeout on Vercel to prevent hard Gateway Timeout (10s Hobby limit)
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Vercel Timeout Guard: Gemini API call exceeded 8000ms threshold")), 8000)
+        );
+        const response = await Promise.race([apiCall, timeoutPromise]);
+        return response;
+      } else {
+        const response = await apiCall;
+        return response;
+      }
     } catch (error: any) {
       attempt++;
       const errorMsg = error?.message || String(error);
@@ -82,7 +95,7 @@ async function generateContentWithRetry(
         errorMsg.includes("Overloaded") ||
         errorMsg.includes("overloaded");
 
-      const canRetry = attempt <= maxRetries;
+      const canRetry = attempt <= actualMaxRetries;
 
       if (isUnavailable && canRetry) {
         // Handle search grounding self-healing: if the attempt failed with tools enabled, strip them so it can fall back to standard generation
