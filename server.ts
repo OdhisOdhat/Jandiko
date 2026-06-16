@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { handleOfflineGeneration } from "./src/utils/offlineGenerator";
@@ -289,7 +288,12 @@ app.get("/api/health", (req, res) => {
 
 // Serve frontend assets
 async function setupViteOrStatic() {
-  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+  if (process.env.VERCEL) {
+    // Vercel serves the static frontend assets directly from CDN. No need to mount Express static or Vite middlewares.
+    return;
+  }
+  if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
