@@ -421,7 +421,11 @@ async function setupViteOrStatic() {
     return;
   }
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
+    // Hide the "vite" import from Vercel's Node File Trace (NFT) static analyzer by using a variable.
+    // This prevents Vercel from attempting to bundle the massive development tool and its native binary
+    // files (like platform-specific esbuild binaries) which fail to run and cause FUNCTION_INVOCATION_FAILED.
+    const viteModuleName = "vite";
+    const { createServer: createViteServer } = await import(viteModuleName);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
