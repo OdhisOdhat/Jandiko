@@ -182,9 +182,10 @@ Instructions:
 3. Provide a fully finished, cohesive, highly polished final document. Output only the final written text.`
 };
 
+const app = express();
+app.use(express.json({ limit: "15mb" }));
+
 async function startServer() {
-  const app = express();
-  app.use(express.json({ limit: "15mb" }));
 
   // Stepwise generation runner
   app.post("/api/generate-step", async (req, res) => {
@@ -316,10 +317,14 @@ async function startServer() {
     });
   }
 
-  const PORT = 3000;
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server fully operational on http://localhost:${PORT} in ${process.env.NODE_ENV || "development"} mode.`);
-  });
+  if (!process.env.VERCEL) {
+    const PORT = 3000;
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server fully operational on http://localhost:${PORT} in ${process.env.NODE_ENV || "development"} mode.`);
+    });
+  }
 }
 
 startServer();
+
+export default app;
