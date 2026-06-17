@@ -1,19 +1,20 @@
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
+import { GoogleGenAI } from "@google/genai";
+import * as cheerio from "cheerio";
 import { handleOfflineGeneration } from "./src/utils/offlineGenerator";
 
 dotenv.config();
 
-// Initialize Gemini SDK lazily, with proper User-Agent header
-let aiClient: any = null;
-async function getGeminiClient(): Promise<any> {
+// Initialize Gemini SDK with proper User-Agent header
+let aiClient: GoogleGenAI | null = null;
+async function getGeminiClient(): Promise<GoogleGenAI> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY environment variable is not defined!");
   }
   if (!aiClient) {
-    const { GoogleGenAI } = await import("@google/genai");
     aiClient = new GoogleGenAI({
       apiKey: apiKey,
       httpOptions: {
@@ -245,7 +246,6 @@ app.post("/api/scrape", async (req, res) => {
     const htmlBody = await response.text();
 
     // Use cheerio to parse structural element tree
-    const cheerio = await import("cheerio");
     const $ = cheerio.load(htmlBody);
 
     // Filter noisy layout tags having zero research relevance
